@@ -44,7 +44,7 @@ Addr = Engine.getResults(40);
 // Write to address
 long WriteAddress = 0x1abc;
 char newData[] = {0x01, 0x02, 0x03, 0x04}; 
-memoryEngine.CGPWriteMemory(WriteAddress, newData, sizeof(newData));
+Engine.CGPWriteMemory(WriteAddress, newData, sizeof(newData));
 
 // Scan and Write
 double ChangeValue = 12.5249042791403535;
