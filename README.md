@@ -2,16 +2,10 @@
 
 ## Overview
 
-CGuardProbe is a comprehensive library designed for iOS and macOS platforms that leverages the Mach API to perform advanced memory scanning and manipulation tasks. It offers developers the capability to scan, read, write, allocate, and deallocate memory in a target process, providing powerful tools for debugging, reverse engineering, or enhancing the capabilities of applications through dynamic memory analysis.
+CGuardProbe - memory engine designed for iOS and macOS platforms that leverages the Mach API to perform memory scanning and manipulation tasks. It offers capability to scan, search, read, write, allocate, deallocate memory in a target process, providing powerful tools for debugging, reverse engineering, or enhancing the capabilities of applications through dynamic memory analysis.
+
+
 ---
-## Features
-
-- **Memory Scanning:** Search memory regions for specific patterns or data.
-- **Reading/Writing Memory:** Directly read from or write to specific memory addresses.
-- **Memory Allocation/Deallocation:** Manage memory dynamically within a target process.
-- **Memory Protection:** Modify the protection attributes of memory regions.
-- **Address Querying:** Retrieve detailed information about memory regions.
-
 ## Requirements
 
 - macOS/iOS
@@ -19,79 +13,85 @@ CGuardProbe is a comprehensive library designed for iOS and macOS platforms that
 - c++1x
 - #include "CGuardMemory/CGPMemory.h"
 
-## Usage
-
-### Initializing the Memory Engine
-
-Before performing any operations, initialize the memory engine with the task port of the target process:
-
+## Features
 ```cpp
-mach_port_t target_task; // Assume you have obtained task port of the target process
-CGPMemoryEngine memoryEngine(target_task);
+AddrRange SearchRange = (AddrRange){0x100000000, 0x300000000};
+static vector<void*> Addr;
 ```
-
-### Scanning Memory for Specific Data
-
-Scan for a specific pattern in a predefined address range:
-
+Initialize the memory engine with the task port of the target process
 ```cpp
-AddrRange searchRange = {0x1000, 0x2000}; // Define the memory range
-char targetData[] = {0x90, 0x90}; // Data to search for
+CGPMemoryEngine Engine = CGPMemoryEngine(mach_task_self());
+```
+- **Memory Scanning and Searching:** Search memory regions for specific patterns or data, use CGP search types.
+```cpp
+// Scan float value
+float Search = 3566.004f;
+Engine.CGPScanMemory(SearchRange, &Search, CGP_Search_Type_Float);
+// Search nearby
+float SearchNearby = 0.267f;
+Engine.CGPNearBySearch(0x100, &SearchNearby, CGP_Search_Type_Float);
+// Get all values
+Addr = Engine.getAllResults();
 
-memoryEngine.CGPScanMemory(searchRange, targetData, sizeof(targetData));
+// Scan int value
+int Search = 728949301;
+Engine.CGPScanMemory(SearchRange, &Search, CGP_Search_Type_SInt);
+// Get 40 values
+Addr = Engine.getResults(40);
+```
+- **Reading/Writing Memory:** Directly read from or write to specific memory addresses.
+```cpp
+// Write to address
+long WriteAddress = 0x1abc;
+char newData[] = {0x01, 0x02, 0x03, 0x04}; 
+memoryEngine.CGPWriteMemory(WriteAddress, newData, sizeof(newData));
 
-auto results = memoryEngine.getAllResults();
-for (void* address : results) {
-    printf("Found at address: %p\n", address);
+// Scan and Write
+double ChangeValue = 12.5249042791403535;
+
+// Scan double value
+if (Addr.size() == 0) {
+    double Search = 12.6664287277627762;
+    Engine.CGPScanMemory(SearchRange, &Search, CGP_Search_Type_Double);
+    // Get 80 values
+    Addr = Engine.getResults(80);
 }
-```
 
-### Reading Memory
+// Write to address
+for (int i = 0; i < Addr.size(); i++) {
+  Engine.CGPWriteMemory((long)Addr[i], &ChangeValue, CGP_Search_Type_Double);
+}
 
-Read data from a specific memory address:
+// Read
+unsigned long long readAddress = 0x1abc;
+size_t dataLength = 4;
 
-```cpp
-unsigned long long readAddress = 0x1abc; // Specify the address
-size_t dataLength = 4; // Number of bytes to read
-
-void* data = memoryEngine.CGPReadMemory(readAddress, dataLength);
+void* data = Engine.CGPReadMemory(readAddress, dataLength);
 if (data) {
-    // Process your data
-    free(data); // Free the allocated buffer after usage
+    // Process data
+    free(data);
 }
+
 ```
-
-### Writing to Memory
-
-Modify the contents of a specific memory address:
-
+- **Memory Allocation/Deallocation:** Manage memory dynamically within a target process.
 ```cpp
-long writeAddress = 0x1abc; // Specify the address
-char newData[] = {0x01, 0x02, 0x03, 0x04}; // New data to write
-memoryEngine.CGPWriteMemory(writeAddress, newData, sizeof(newData));
-```
+size_t allocSize = 1024; // size of memory to allocate
+void* allocatedMemory = Engine.CGPAllocateMemory(allocSize);
 
-### Allocating and Deallocating Memory
-
-Allocate and then deallocate memory within the target process:
-
-```cpp
-size_t allocSize = 1024; // Size of memory to allocate
-void* allocatedMemory = memoryEngine.CGPAllocateMemory(allocSize);
-
-// Optionally use the allocated memory...
+// use allocated memory...
 
 memoryEngine.CGPDeallocateMemory(allocatedMemory, allocSize);
 ```
 
-### Protecting Memory
-
-Change the protection of a memory region:
-
+- **Memory Protection:** Modify the protection attributes of memory regions.
 ```cpp
-void* protectAddress = allocatedMemory; // Use previously allocated memory
+void* protectAddress = allocatedMemory; // previously allocated memory
 size_t protectSize = 1024;
-memoryEngine.CGPProtectMemory(protectAddress, protectSize, VM_PROT_READ | VM_PROT_WRITE);
+Engine.CGPProtectMemory(protectAddress, protectSize, VM_PROT_READ | VM_PROT_WRITE);
+```
+- **Address Querying:** Retrieve detailed information about memory regions.
+```cpp
+kern_return_t kr = Engine.CGPQueryMemory(address, &size, &protection, &inheritance);
 ```
 
 ## Contributing
