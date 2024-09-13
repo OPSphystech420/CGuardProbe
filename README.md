@@ -22,7 +22,7 @@ Initialize the memory engine with the task port of the target process
 ```cpp
 CGPMemoryEngine Engine = CGPMemoryEngine(mach_task_self());
 ```
-- **Get base address by simply passing lib name into this function
+- Get base address by simply passing lib name into this function
 ```cpp
 Engine.getImageBase("MainLib"); 
 ```
