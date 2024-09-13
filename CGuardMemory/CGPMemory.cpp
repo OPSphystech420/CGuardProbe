@@ -219,3 +219,26 @@ Result* CGPMemoryEngine::ResultAllocate() {
     newResult->count = 0;
     return newResult;
 }
+
+bool CGPMemoryEngine::changeMemoryProtection(uintptr_t address, size_t size, int protection) {
+    size_t pageSize = sysconf(_SC_PAGESIZE);
+    uintptr_t pageStart = address & ~(pageSize - 1);
+    uintptr_t pageEnd = (address + size + pageSize - 1) & ~(pageSize - 1);
+    return mprotect((void*)pageStart, pageEnd - pageStart, protection) == 0;
+}
+
+template<int Index>
+void CGPMemoryEngine::hookVMTFunction(uintptr_t classInstance, uintptr_t newFunction, uintptr_t& originalFunction) {
+    if (!classInstance) return;
+    uintptr_t vtable = *reinterpret_cast<uintptr_t*>(classInstance);
+    if (!vtable) return;
+
+    uintptr_t functionAddress = vtable + Index * sizeof(void*);
+
+    if (*reinterpret_cast<uintptr_t*>(functionAddress) != newFunction) {
+        originalFunction = *reinterpret_cast<uintptr_t*>(functionAddress);
+        changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_WRITE | PROT_EXEC);
+        *reinterpret_cast<uintptr_t*>(functionAddress) = newFunction;
+        changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_EXEC);
+    }
+}
