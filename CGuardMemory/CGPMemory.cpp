@@ -6,6 +6,7 @@
 //
 
 #include "CGPMemory.h"
+#include "fishhook.h"
 
 uintptr_t CGPMemoryEngine::getImageBase(const std::string& imageName) {
     static uintptr_t imageBase;
