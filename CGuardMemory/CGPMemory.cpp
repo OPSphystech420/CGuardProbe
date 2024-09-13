@@ -242,3 +242,30 @@ void CGPMemoryEngine::hookVMTFunction(uintptr_t classInstance, uintptr_t newFunc
         changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_EXEC);
     }
 }
+
+bool CGPMemoryEngine::rebindSymbol(const char* symbolName, void* newFunction, void** originalFunction) {
+    struct rebinding rebindings = { symbolName, newFunction, originalFunction };
+    return rebind_symbols(&rebindings, 1) == 0;
+}
+
+bool CGPMemoryEngine::rebindSymbols(
+    const std::vector<std::tuple<const char*, void*, void**>>& symbols,
+    const std::function<bool(const char*)>& condition,
+    const std::function<void(const char*)>& onFailure
+) {
+    std::vector<rebinding> rebindings;
+    for (const auto& [name, newFunc, origFunc] : symbols) {
+        if (condition && !condition(name)) {
+            continue;
+        }
+        rebindings.push_back({ name, newFunc, origFunc });
+    }
+    int result = rebind_symbols(rebindings.data(), rebindings.size());
+    if (result != 0 && onFailure) {
+        for (const auto& [name, _, __] : symbols) {
+            onFailure(name);
+        }
+    }
+    return result == 0;
+}
+
