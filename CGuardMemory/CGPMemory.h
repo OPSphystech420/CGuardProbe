@@ -52,6 +52,8 @@ typedef struct _image {
 
 class CGPMemoryEngine {
 public:
+    uintptr_t getImageBase(const char *imageName);
+
     CGPMemoryEngine(mach_port_t task);
     ~CGPMemoryEngine(void);
     
