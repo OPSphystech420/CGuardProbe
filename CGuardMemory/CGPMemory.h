@@ -11,10 +11,17 @@
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 
+#include <sys/mman.h>
+#include <unistd.h> 
+
+#include <iostream>
+
+#include <cstdint> 
+#include <cstring>
+
 #include <stdio.h>
 
 #include <algorithm>
-
 #include <vector>
 
 #define CGP_Search_Type_ULong 8
