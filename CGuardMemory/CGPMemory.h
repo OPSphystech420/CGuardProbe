@@ -12,15 +12,16 @@
 #include <mach/mach.h>
 
 #include <sys/mman.h>
-#include <unistd.h> 
+#include <unistd.h>
 
 #include <iostream>
 
-#include <cstdint> 
+#include <cstdint>
 #include <cstring>
 
 #include <stdio.h>
 
+#include <functional>
 #include <algorithm>
 #include <vector>
 
@@ -79,18 +80,21 @@ public:
     
     kern_return_t CGPProtectMemory(void* address, size_t size, vm_prot_t protection);
     kern_return_t CGPQueryMemory(void* address, vm_size_t* size, vm_prot_t* protection, vm_inherit_t* inheritance);
-    
+
     bool changeMemoryProtection(uintptr_t address, size_t size, int protection);
     
     template<int Index>
     void hookVMTFunction(uintptr_t classInstance, uintptr_t newFunction, uintptr_t& originalFunction);
-
+    
     bool rebindSymbol(const char* symbolName, void* newFunction, void** originalFunction);
     bool rebindSymbols(
         const std::vector<std::tuple<const char*, void*, void**>>& symbols,
         const std::function<bool(const char*)>& condition = nullptr,
         const std::function<void(const char*)>& onFailure = nullptr
     );
+    
+    bool remapLibrary(const std::string& libraryName);
+
     
 private:
     mach_port_t task;
