@@ -7,6 +7,16 @@
 
 #include "CGPMemory.h"
 
+uintptr_t CGPMemoryEngine::getImageBase(const char *imageName) {
+    for (uint32_t i = 0; i < _dyld_image_count(); ++i) {
+        const char *dyldImageName = _dyld_get_image_name(i);
+        if (strstr(dyldImageName, imageName)) {
+            return reinterpret_cast<uintptr_t>(_dyld_get_image_header(i));
+        }
+    }
+    return 0;
+}
+
 CGPMemoryEngine::CGPMemoryEngine(mach_port_t task) {
     this->task = task;
     Result *newResult = new Result;
