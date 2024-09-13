@@ -80,6 +80,11 @@ public:
     kern_return_t CGPProtectMemory(void* address, size_t size, vm_prot_t protection);
     kern_return_t CGPQueryMemory(void* address, vm_size_t* size, vm_prot_t* protection, vm_inherit_t* inheritance);
     
+    bool changeMemoryProtection(uintptr_t address, size_t size, int protection);
+    
+    template<int Index>
+    void hookVMTFunction(uintptr_t classInstance, uintptr_t newFunction, uintptr_t& originalFunction);
+    
 private:
     mach_port_t task;
     Result *result;
