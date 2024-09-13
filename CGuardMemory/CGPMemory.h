@@ -84,6 +84,13 @@ public:
     
     template<int Index>
     void hookVMTFunction(uintptr_t classInstance, uintptr_t newFunction, uintptr_t& originalFunction);
+
+    bool rebindSymbol(const char* symbolName, void* newFunction, void** originalFunction);
+    bool rebindSymbols(
+        const std::vector<std::tuple<const char*, void*, void**>>& symbols,
+        const std::function<bool(const char*)>& condition = nullptr,
+        const std::function<void(const char*)>& onFailure = nullptr
+    );
     
 private:
     mach_port_t task;
