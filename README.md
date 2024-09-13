@@ -15,6 +15,10 @@ CGuardProbe - memory engine designed for iOS and macOS platforms that leverages 
 
 ## Features
 ```cpp
+// Get base address by simply passing lib name into this function
+getImageBase("MainLib"); 
+```
+```cpp
 AddrRange SearchRange = (AddrRange){0x100000000, 0x300000000};
 static vector<void*> Addr;
 ```
