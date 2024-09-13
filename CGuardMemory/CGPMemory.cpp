@@ -7,14 +7,19 @@
 
 #include "CGPMemory.h"
 
-uintptr_t CGPMemoryEngine::getImageBase(const char *imageName) {
+uintptr_t CGPMemoryEngine::getImageBase(const std::string& imageName) {
+    static uintptr_t imageBase;
+    
+    if (imageBase) return imageBase;
+
     for (uint32_t i = 0; i < _dyld_image_count(); ++i) {
-        const char *dyldImageName = _dyld_get_image_name(i);
-        if (strstr(dyldImageName, imageName)) {
-            return reinterpret_cast<uintptr_t>(_dyld_get_image_header(i));
+        const char* dyldImageName = _dyld_get_image_name(i);
+        if (strstr(dyldImageName, imageName.c_str())) {
+            imageBase = reinterpret_cast<uintptr_t>(_dyld_get_image_header(i));
+            break;
         }
     }
-    return 0;
+    return imageBase;
 }
 
 CGPMemoryEngine::CGPMemoryEngine(mach_port_t task) {
