@@ -229,17 +229,17 @@ bool CGPMemoryEngine::changeMemoryProtection(uintptr_t address, size_t size, int
 }
 
 template<int Index>
-void CGPMemoryEngine::hookVMTFunction(uintptr_t classInstance, uintptr_t newFunction, uintptr_t& originalFunction) {
+void CGPMemoryEngine::hookVMTFunction(uintptr_t classInstance, uintptr_t newFunc, uintptr_t& origFunc) {
     if (!classInstance) return;
     uintptr_t vtable = *reinterpret_cast<uintptr_t*>(classInstance);
     if (!vtable) return;
 
     uintptr_t functionAddress = vtable + Index * sizeof(void*);
 
-    if (*reinterpret_cast<uintptr_t*>(functionAddress) != newFunction) {
-        originalFunction = *reinterpret_cast<uintptr_t*>(functionAddress);
+    if (*reinterpret_cast<uintptr_t*>(functionAddress) != newFunc) {
+        origFunc = *reinterpret_cast<uintptr_t*>(functionAddress);
         changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_WRITE | PROT_EXEC);
-        *reinterpret_cast<uintptr_t*>(functionAddress) = newFunction;
+        *reinterpret_cast<uintptr_t*>(functionAddress) = newFunc;
         changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_EXEC);
     }
 }
@@ -268,5 +268,92 @@ bool CGPMemoryEngine::rebindSymbols(
         }
     }
     return result == 0;
+}
+
+bool CGPMemoryEngine::remapLibrary(const std::string& libraryName) {
+    uint32_t imageCount = _dyld_image_count();
+    const mach_header* header = nullptr;
+    uintptr_t slide = 0;
+
+    for (uint32_t i = 0; i < imageCount; ++i) {
+        const char* imageName = _dyld_get_image_name(i);
+        if (strstr(imageName, libraryName.c_str())) {
+            header = _dyld_get_image_header(i);
+            slide = _dyld_get_image_vmaddr_slide(i);
+            break;
+        }
+    }
+
+    if (!header) return false;
+
+    const segment_command_64* seg = nullptr;
+    uintptr_t startAddress = UINTPTR_MAX;
+    uintptr_t endAddress = 0;
+
+    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(header);
+    const load_command* cmd = reinterpret_cast<const load_command*>(ptr + sizeof(mach_header_64));
+    for (uint32_t i = 0; i < header->ncmds; ++i) {
+        if (cmd->cmd == LC_SEGMENT_64) {
+            seg = reinterpret_cast<const segment_command_64*>(cmd);
+            if (seg->vmsize > 0) {
+                uintptr_t segStart = seg->vmaddr + slide;
+                uintptr_t segEnd = segStart + seg->vmsize;
+                if (segStart < startAddress) startAddress = segStart;
+                if (segEnd > endAddress) endAddress = segEnd;
+            }
+        }
+        cmd = reinterpret_cast<const load_command*>(reinterpret_cast<const uint8_t*>(cmd) + cmd->cmdsize);
+    }
+
+    size_t imageSize = endAddress - startAddress;
+    void* originalAddress = reinterpret_cast<void*>(startAddress);
+
+    void* newMapping = mmap(nullptr, imageSize, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (newMapping == MAP_FAILED) {
+        // You can handle error, if needed
+        return false;
+    }
+
+    kern_return_t kr = vm_read_overwrite(
+        mach_task_self(),
+        startAddress,
+        imageSize,
+        reinterpret_cast<mach_vm_address_t>(newMapping),
+        &imageSize
+    );
+    
+    if (kr != KERN_SUCCESS) {
+        // You can handle error, if needed
+        munmap(newMapping, imageSize);
+        return false;
+    }
+
+    kr = vm_deallocate(mach_task_self(), startAddress, imageSize);
+    if (kr != KERN_SUCCESS) {
+        // You can handle error, if needed
+        munmap(newMapping, imageSize);
+        return false;
+    }
+
+    void* remapped = mmap(
+        originalAddress,
+        imageSize,
+        PROT_READ | PROT_WRITE | PROT_EXEC,
+        MAP_FIXED | MAP_PRIVATE | MAP_ANON,
+        -1,
+        0
+    );
+    if (remapped == MAP_FAILED) {
+        // You can handle error, if needed
+        munmap(newMapping, imageSize);
+        return false;
+    }
+
+    memcpy(remapped, newMapping, imageSize);
+    munmap(newMapping, imageSize);
+
+    mprotect(remapped, imageSize, PROT_READ | PROT_EXEC);
+
+    return true;
 }
 
