@@ -187,7 +187,7 @@ void CGPMemoryEngine::CGPDeallocateMemory(void* address, size_t size) {
 }
 
 kern_return_t CGPMemoryEngine::CGPProtectMemory(void* address, size_t size, vm_prot_t protection) {
-    return mach_vm_protect(task, (mach_vm_address_t)address, size, FALSE, protection);
+    return vm_protect(task, (vm_address_t)address, size, FALSE, protection);
 }
 
 kern_return_t CGPMemoryEngine::CGPQueryMemory(void* address, vm_size_t* size, vm_prot_t* protection, vm_inherit_t* inheritance) {
@@ -226,9 +226,7 @@ bool CGPMemoryEngine::ChangeMemoryProtection(uintptr_t address, size_t size, int
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t pageStart = address & ~(pageSize - 1);
     uintptr_t pageEnd = (address + size + pageSize - 1) & ~(pageSize - 1);
-
-    kern_return_t kr = mach_vm_protect(mach_task_self(), pageStart, pageEnd - pageStart, FALSE, protection);
-    return kr == KERN_SUCCESS;
+    return mprotect((void*)pageStart, pageEnd - pageStart, protection) == 0;
 }
 
 template<int Index>
@@ -241,9 +239,9 @@ void CGPMemoryEngine::VMTHook(uintptr_t classInstance, uintptr_t newFunc, uintpt
 
     if (*reinterpret_cast<uintptr_t*>(functionAddress) != newFunc) {
         origFunc = *reinterpret_cast<uintptr_t*>(functionAddress);
-        changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_WRITE | PROT_EXEC);
+        ChangeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_WRITE | PROT_EXEC);
         *reinterpret_cast<uintptr_t*>(functionAddress) = newFunc;
-        changeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_EXEC);
+        ChangeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_EXEC);
     }
 }
 
@@ -421,6 +419,6 @@ uintptr_t CGPMemoryEngine::ScanIDAPattern(const uint8_t* data, size_t data_len, 
     
     ParseIDAPattern(ida_pattern, pattern, mask);
     
-    return FindPattern(data, data_len, pattern.data(), mask.c_str());
+    return ScanPattern(data, data_len, pattern.data(), mask.c_str());
 }
 
