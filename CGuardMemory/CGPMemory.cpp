@@ -8,7 +8,7 @@
 #include "CGPMemory.h"
 #include "fishhook.h"
 
-uintptr_t CGPMemoryEngine::getImageBase(const std::string& imageName) {
+uintptr_t CGPMemoryEngine::GetImageBase(const std::string& imageName) {
     static uintptr_t imageBase;
     
     if (imageBase) return imageBase;
@@ -156,7 +156,7 @@ void CGPMemoryEngine::CGPWriteMemory(long address, void* target, int len) {
     }
 }
 
-vector<void*> CGPMemoryEngine::getAllResults() {
+vector<void*> CGPMemoryEngine::GetAllResults() {
     vector<void*> addresses;
     for (auto& region : result->resultBuffer) {
         addresses.push_back((void*)region->region_base);
@@ -164,7 +164,7 @@ vector<void*> CGPMemoryEngine::getAllResults() {
     return addresses;
 }
 
-vector<void*> CGPMemoryEngine::getResults(int count) {
+vector<void*> CGPMemoryEngine::GetResults(int count) {
     vector<void*> addresses;
     for (int i = 0; i < count && i < result->resultBuffer.size(); i++) {
         addresses.push_back((void*)result->resultBuffer[i]->region_base);
@@ -221,7 +221,7 @@ Result* CGPMemoryEngine::ResultAllocate() {
     return newResult;
 }
 
-bool CGPMemoryEngine::changeMemoryProtection(uintptr_t address, size_t size, int protection) {
+bool CGPMemoryEngine::ChangeMemoryProtection(uintptr_t address, size_t size, int protection) {
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t pageStart = address & ~(pageSize - 1);
     uintptr_t pageEnd = (address + size + pageSize - 1) & ~(pageSize - 1);
@@ -229,7 +229,7 @@ bool CGPMemoryEngine::changeMemoryProtection(uintptr_t address, size_t size, int
 }
 
 template<int Index>
-void CGPMemoryEngine::hookVMTFunction(uintptr_t classInstance, uintptr_t newFunc, uintptr_t& origFunc) {
+void CGPMemoryEngine::VMTHook(uintptr_t classInstance, uintptr_t newFunc, uintptr_t& origFunc) {
     if (!classInstance) return;
     uintptr_t vtable = *reinterpret_cast<uintptr_t*>(classInstance);
     if (!vtable) return;
@@ -244,12 +244,12 @@ void CGPMemoryEngine::hookVMTFunction(uintptr_t classInstance, uintptr_t newFunc
     }
 }
 
-bool CGPMemoryEngine::rebindSymbol(const char* symbolName, void* newFunction, void** originalFunction) {
+bool CGPMemoryEngine::RebindSymbol(const char* symbolName, void* newFunction, void** originalFunction) {
     struct rebinding rebindings = { symbolName, newFunction, originalFunction };
     return rebind_symbols(&rebindings, 1) == 0;
 }
 
-bool CGPMemoryEngine::rebindSymbols(
+bool CGPMemoryEngine::RebindSymbols(
     const std::vector<std::tuple<const char*, void*, void**>>& symbols,
     const std::function<bool(const char*)>& condition,
     const std::function<void(const char*)>& onFailure
@@ -270,7 +270,7 @@ bool CGPMemoryEngine::rebindSymbols(
     return result == 0;
 }
 
-bool CGPMemoryEngine::remapLibrary(const std::string& libraryName) {
+bool CGPMemoryEngine::RemapLibrary(const std::string& libraryName) {
     uint32_t imageCount = _dyld_image_count();
     const mach_header* header = nullptr;
     uintptr_t slide = 0;
@@ -355,5 +355,69 @@ bool CGPMemoryEngine::remapLibrary(const std::string& libraryName) {
     mprotect(remapped, imageSize, PROT_READ | PROT_EXEC);
 
     return true;
+}
+
+void CGPMemoryEngine::ParseIDAPattern(const std::string& ida_pattern, std::vector<uint8_t>& pattern, std::string& mask) {
+    size_t i = 0;
+    
+    while (i < ida_pattern.length()) {
+        
+        if (std::isspace(ida_pattern[i])) {
+            ++i;
+            continue;
+        }
+        
+        if (ida_pattern[i] == '?') {
+            pattern.push_back(0x00);
+            mask += '?';
+            ++i;
+        } else if (std::isxdigit(ida_pattern[i])) {
+            std::string byteStr;
+            byteStr += ida_pattern[i++];
+            
+            if (i < ida_pattern.length() && isxdigit(ida_pattern[i])) byteStr += ida_pattern[i++];
+            else continue; /* u can add logs, if hex digit is invalid - byteStr */
+            
+            uint8_t byte = static_cast<uint8_t>(std::stoul(byteStr, nullptr, 16));
+            pattern.push_back(byte);
+            mask += 'x';
+        } else {
+            /* invalid character - ida_pattern[i] */
+            ++i;
+        }
+    }
+}
+
+uintptr_t /* std::vector<size_t> */ CGPMemoryEngine::ScanPattern(const uint8_t* data, size_t data_len, const uint8_t* pattern, const char* mask) {
+   /* std::vector<size_t> results; */
+    
+    size_t pattern_len = std::strlen(mask);
+    
+    for (size_t i = 0; i <= data_len - pattern_len; ++i) {
+        
+        bool found = true;
+        for (size_t j = 0; j < pattern_len; ++j) {
+            
+            if (mask[j] == 'x' && data[i + j] != pattern[j]) {
+                found = false;
+                break;
+            }
+            // if mask[j] == '?' - wildcard
+        }
+        
+     /*   if (found) results.push_back(i); */
+        if (found) return reinterpret_cast<uintptr_t>(&data[i]);
+    }
+    return /* results */ 0;
+}
+
+uintptr_t CGPMemoryEngine::ScanIDAPattern(const uint8_t* data, size_t data_len, const std::string& ida_pattern) {
+    
+    std::vector<uint8_t> pattern;
+    std::string mask;
+    
+    ParseIDAPattern(ida_pattern, pattern, mask);
+    
+    return FindPattern(data, data_len, pattern.data(), mask.c_str());
 }
 
