@@ -13,6 +13,17 @@ CGuardProbe - memory engine designed for iOS and macOS platforms that leverages 
 - c++1x
 - #include "CGuardMemory/CGPMemory.h"
 
+## What's new
+Added functions
+- ChangeMemoryProtection
+- VMTHook 
+- RebindSymbol
+- RebindSymbols
+- RemapLibrary
+- ParseIDAPattern
+- ScanPattern
+- ScanIDAPattern
+
 ## Features
 ```cpp
 AddrRange SearchRange = (AddrRange){0x100000000, 0x300000000};
@@ -22,9 +33,9 @@ Initialize the memory engine with the task port of the target process
 ```cpp
 CGPMemoryEngine Engine = CGPMemoryEngine(mach_task_self());
 ```
-- Get base address by simply passing lib name into this function
+Get base address by simply passing lib name into this function
 ```cpp
-Engine.GetImageBase("MainLib"); 
+uintptr_t ImageBase = Engine.GetImageBase("MainLib"); 
 ```
 - **Memory Scanning and Searching:** Search memory regions for specific patterns or data, use CGP search types.
 ```cpp
