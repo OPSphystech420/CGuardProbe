@@ -187,7 +187,7 @@ void CGPMemoryEngine::CGPDeallocateMemory(void* address, size_t size) {
 }
 
 kern_return_t CGPMemoryEngine::CGPProtectMemory(void* address, size_t size, vm_prot_t protection) {
-    return vm_protect(task, (vm_address_t)address, size, FALSE, protection);
+    return mach_vm_protect(task, (mach_vm_address_t)address, size, FALSE, protection);
 }
 
 kern_return_t CGPMemoryEngine::CGPQueryMemory(void* address, vm_size_t* size, vm_prot_t* protection, vm_inherit_t* inheritance) {
@@ -226,7 +226,9 @@ bool CGPMemoryEngine::ChangeMemoryProtection(uintptr_t address, size_t size, int
     size_t pageSize = sysconf(_SC_PAGESIZE);
     uintptr_t pageStart = address & ~(pageSize - 1);
     uintptr_t pageEnd = (address + size + pageSize - 1) & ~(pageSize - 1);
-    return mprotect((void*)pageStart, pageEnd - pageStart, protection) == 0;
+
+    kern_return_t kr = mach_vm_protect(mach_task_self(), pageStart, pageEnd - pageStart, FALSE, protection);
+    return kr == KERN_SUCCESS;
 }
 
 template<int Index>
