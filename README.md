@@ -24,7 +24,7 @@ CGPMemoryEngine Engine = CGPMemoryEngine(mach_task_self());
 ```
 - Get base address by simply passing lib name into this function
 ```cpp
-Engine.getImageBase("MainLib"); 
+Engine.GetImageBase("MainLib"); 
 ```
 - **Memory Scanning and Searching:** Search memory regions for specific patterns or data, use CGP search types.
 ```cpp
@@ -35,13 +35,13 @@ Engine.CGPScanMemory(SearchRange, &Search, CGP_Search_Type_Float);
 float SearchNearby = 0.267f;
 Engine.CGPNearBySearch(0x100, &SearchNearby, CGP_Search_Type_Float);
 // Get all values
-Addr = Engine.getAllResults();
+Addr = Engine.GetAllResults();
 
 // Scan int value
 int Search = 728949301;
 Engine.CGPScanMemory(SearchRange, &Search, CGP_Search_Type_SInt);
 // Get 40 values
-Addr = Engine.getResults(40);
+Addr = Engine.GetResults(40);
 ```
 - **Reading/Writing Memory:** Directly read from or write to specific memory addresses.
 ```cpp
@@ -58,7 +58,7 @@ if (Addr.size() == 0) {
     double Search = 12.6664287277627762;
     Engine.CGPScanMemory(SearchRange, &Search, CGP_Search_Type_Double);
     // Get 80 values
-    Addr = Engine.getResults(80);
+    Addr = Engine.GetResults(80);
 }
 
 // Write to address
