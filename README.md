@@ -15,11 +15,11 @@ CGuardProbe - memory engine designed for iOS and macOS platforms that leverages 
 
 ## What's new
 Added functions
-- ChangeMemoryProtection
-- VMTHook 
+- ~~ChangeMemoryProtection~~
+- ~~VMTHook~~
 - RebindSymbol
 - RebindSymbols
-- RemapLibrary
+- ~~RemapLibrary~~
 - ParseIDAPattern
 - ScanPattern
 - ScanIDAPattern
