@@ -2,7 +2,7 @@
 
 ## Overview
 
-CGuardProbe - memory engine designed for iOS and macOS platforms that leverages the Mach API to perform memory scanning and manipulation tasks. It offers capability to scan, search, read, write, allocate, deallocate memory in a target process, providing powerful tools for debugging, reverse engineering, or enhancing the capabilities of applications through dynamic memory analysis.
+Memory engine and scanner designed for iOS and macOS platforms that leverages the Mach API to perform memory scanning and manipulation tasks. It offers capability to scan, search, read, write, allocate, deallocate memory in a target process, providing powerful tools for debugging, reverse engineering, or enhancing the capabilities of applications through dynamic memory analysis.
 
 New update!
 ---
