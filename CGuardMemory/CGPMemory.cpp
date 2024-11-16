@@ -1,88 +1,96 @@
-//
-//  CGPMemory.cpp
-//  CGuardProbe
-//
-//  Made by OPSphystech420 on 2024/5/17
-//  Contributor ZarakiDev
-//
+/* * * * * * * * * * * * * * * * * * *
+ * * CGPMemory.cpp * * * * * * * * * *
+ * * CGuardProbe (And More!) * * * * *
+ * * * * * * * * * * * * * * * * * * *
+ * * Made by OPSphystech420  * * * * *
+ * * Contributor ZarakiDev 2024 (c)  *
+ * * * * * * * * * * * * * * * * * * */
 
 #include "CGPMemory.h"
-#include "fishhook.h"
 
-uintptr_t CGPMemoryEngine::GetImageBase(const std::string& imageName) {
-    static uintptr_t imageBase;
-    
-    if (imageBase) return imageBase;
+#pragma mark - CGPMemoryEngine Implementation -
 
-    for (uint32_t i = 0; i < _dyld_image_count(); ++i) {
-        const char* dyldImageName = _dyld_get_image_name(i);
-        if (strstr(dyldImageName, imageName.c_str())) {
-            imageBase = reinterpret_cast<uintptr_t>(_dyld_get_image_header(i));
-            break;
-        }
-    }
-    return imageBase;
-}
-
-CGPMemoryEngine::CGPMemoryEngine(mach_port_t task) {
-    this->task = task;
-    Result *newResult = new Result;
-    newResult->count = 0;
-    this->result = newResult;
-}
-
-CGPMemoryEngine::~CGPMemoryEngine(void) {
-    if (result != nullptr) {
-        for (int i = 0; i < result->resultBuffer.size(); i++) {
-            result->resultBuffer[i]->slide.clear();
-            result->resultBuffer[i]->slide.shrink_to_fit();
-            delete result->resultBuffer[i];
-            result->resultBuffer[i] = nullptr;
-        }
-        result->resultBuffer.clear();
-        result->resultBuffer.shrink_to_fit();
-        delete result;
-        result = nullptr;
+CGPMemoryEngine::CGPMemoryEngine(mach_port_t task)
+    : task_(task), result_(AllocateResult()), pageSize_(static_cast<size_t>(sysconf(_SC_PAGESIZE)))
+{
+    if (!result_) {
+        SetError(CGPErrorCode::Allocation_Fail, "result_ : CGPMemoryEngine");
+        task_ = MACH_PORT_NULL;
     }
 }
 
-void CGPMemoryEngine::CGPScanMemory(AddrRange range, void* target, size_t len) {
+CGPMemoryEngine::~CGPMemoryEngine()
+{
+    DeallocateResult();
+}
+
+void CGPMemoryEngine::DeallocateResult()
+{
+    result_.reset();
+}
+
+std::unique_ptr<Result> CGPMemoryEngine::AllocateResult()
+{
+    return std::make_unique<Result>();
+}
+
+void CGPMemoryEngine::ScanMemory(const AddrRange& range, const void* target, size_t len)
+{
+    if (!IsValid())
+    {
+        return;
+    }
+
+    if (!target || len == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "target || len : ScanMemory");
+        return;
+    }
+
     vm_size_t size = range.end - range.start;
     vm_address_t address = range.start;
     kern_return_t kr;
 
-    while (address < range.end) {
+    while (address < range.end)
+    {
         vm_size_t vmsize;
         vm_region_basic_info_data_64_t info;
         mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
         memory_object_name_t object;
 
-        kr = vm_region_64(task, &address, &vmsize, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object);
-        if (kr != KERN_SUCCESS) {
+        kr = vm_region_64(task_, &address, &vmsize, VM_REGION_BASIC_INFO_64,
+                          reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+        if (kr != KERN_SUCCESS)
+        {
             address += vmsize;
             continue;
         }
 
-        std::vector<uint8_t> buffer(vmsize);
+        auto buffer = std::make_unique< std::vector<uint8_t> >(vmsize);
         size_t bytesRead = 0;
 
-        kr = vm_read_overwrite(task, address, vmsize, (vm_address_t)buffer.data(), &bytesRead);
-        if (kr != KERN_SUCCESS) {
+        kr = vm_read_overwrite(task_, address, vmsize,
+                               reinterpret_cast<vm_address_t>(buffer->data()), &bytesRead);
+        if (kr != KERN_SUCCESS)
+        {
             address += vmsize;
             continue;
         }
 
-        if (bytesRead > vmsize) {
+        if (bytesRead > vmsize)
+        {
             bytesRead = vmsize;
         }
 
-        for (size_t i = 0; i <= bytesRead - len; i++) {
-            if (memcmp(buffer.data() + i, target, len) == 0) {
-                result_region* region = new result_region();
+        for (size_t i = 0; i <= bytesRead - len; ++i)
+        {
+            if (memcmp(buffer->data() + i, target, len) == 0)
+            {
+                auto region = std::make_unique<ResultRegion>();
                 region->region_base = address + i;
-                region->slide.push_back((uint32_t)i);
-                result->resultBuffer.push_back(region);
-                result->count++;
+                region->slide.push_back(static_cast<uint32_t>(i));
+                result_->resultBuffer.emplace_back(std::move(region));
+                result_->count++;
             }
         }
 
@@ -90,335 +98,814 @@ void CGPMemoryEngine::CGPScanMemory(AddrRange range, void* target, size_t len) {
     }
 }
 
-void CGPMemoryEngine::CGPNearBySearch(int range, void* target, size_t len) {
-    vector<result_region*> newResultBuffer;
+void CGPMemoryEngine::NearBySearch(int range, const void* target, size_t len)
+{
+    if (!IsValid())
+    {
+        return;
+    }
 
-    for (auto& region : result->resultBuffer) {
+    if (range <= 0 || !target || len == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "range || target || len : NearBySearch");
+        return;
+    }
+
+    std::vector< std::unique_ptr<ResultRegion> > newResultBuffer;
+
+    for (const auto& region : result_->resultBuffer)
+    {
         vm_address_t base = region->region_base;
 
-        for (int i = -range; i <= range; i++) {
-            vm_address_t address = base + i * len;
+        for (int i = -range; i <= range; ++i)
+        {
+            vm_address_t address = base + i * static_cast<int>(len);
 
-            void* readResult = CGPReadMemory(address, len);
-            
-            if (readResult != nullptr) {
-                if (memcmp(readResult, target, len) == 0) {
-                    result_region* newRegion = new result_region;
+            auto readResult = ReadMemory(address, len);
+
+            if (readResult && readResult->size() == len)
+            {
+                if (memcmp(readResult->data(), target, len) == 0)
+                {
+                    auto newRegion = std::make_unique<ResultRegion>();
                     newRegion->region_base = address;
-                    newResultBuffer.push_back(newRegion);
+                    newResultBuffer.emplace_back(std::move(newRegion));
                 }
-                free(readResult);
             }
         }
     }
 
-    for (auto& region : result->resultBuffer) {
-        delete region;
-    }
-    result->resultBuffer.clear();
-    result->resultBuffer = newResultBuffer;
-    result->count = newResultBuffer.size();
+    result_->resultBuffer = std::move(newResultBuffer);
+    result_->count = static_cast<int>(result_->resultBuffer.size());
 }
 
-bool CGPMemoryEngine::CGPSearchByAddress(unsigned long long address, void* target, size_t len) {
-    void* readResult = CGPReadMemory(address, len);
-    if (readResult != nullptr && memcmp(readResult, target, len) == 0) {
-        free(readResult);
-        return true;
+bool CGPMemoryEngine::SearchByAddress(uint64_t address, const void* target, size_t len)
+{
+    if (!IsValid())
+    {
+        return false;
     }
-    if (readResult != nullptr) {
-        free(readResult);
+
+    if (!target || len == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "target || len : SearchByAddress");
+        return false;
     }
+
+    auto readResult = ReadMemory(address, len);
+
+    if (readResult && readResult->size() == len)
+    {
+        return (memcmp(readResult->data(), target, len) == 0);
+    }
+
     return false;
 }
 
-void* CGPMemoryEngine::CGPReadMemory(unsigned long long address, size_t len) {
-    std::vector<uint8_t> buffer(len);
+std::unique_ptr< std::vector<uint8_t> > CGPMemoryEngine::ReadMemory(uint64_t address, size_t len) const
+{
+    if (!IsValid())
+    {
+        return nullptr;
+    }
+
+    if (len == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "len == 0 : ReadMemory");
+        return nullptr;
+    }
+
+    auto buffer = std::make_unique< std::vector<uint8_t> >(len);
     vm_size_t bytesRead = 0;
-    kern_return_t kr = vm_read_overwrite(task, address, len, (vm_address_t)buffer.data(), &bytesRead);
-    
-    if (kr != KERN_SUCCESS || bytesRead != len) {
+    kern_return_t kr = vm_read_overwrite(task_, address, len,
+                                        reinterpret_cast<vm_address_t>(buffer->data()), &bytesRead);
+
+    if (kr != KERN_SUCCESS || bytesRead != len)
+    { // Error description mach_error_string(kr)
+        SetError(CGPErrorCode::VMRead_Fail, "Failed to ReadMemory");
         return nullptr;
     }
-    
-    void* resultBuffer = malloc(len);
-    if (resultBuffer == nullptr) {
-        return nullptr;
-    }
-    
-    memcpy(resultBuffer, buffer.data(), len);
-    return resultBuffer;
+
+    return buffer;
 }
 
-void CGPMemoryEngine::CGPWriteMemory(long address, void* target, int len) {
-    kern_return_t kr = vm_write(task, (vm_address_t)address, (vm_offset_t)target, (mach_msg_type_number_t)len);
-    if (kr != KERN_SUCCESS) {
-        // You can handle error, if needed
-    }
-}
-
-vector<void*> CGPMemoryEngine::GetAllResults() {
-    vector<void*> addresses;
-    for (auto& region : result->resultBuffer) {
-        addresses.push_back((void*)region->region_base);
-    }
-    return addresses;
-}
-
-vector<void*> CGPMemoryEngine::GetResults(int count) {
-    vector<void*> addresses;
-    for (int i = 0; i < count && i < result->resultBuffer.size(); i++) {
-        addresses.push_back((void*)result->resultBuffer[i]->region_base);
-    }
-    return addresses;
-}
-
-void* CGPMemoryEngine::CGPAllocateMemory(size_t size) {
-    vm_address_t address = 0;
-    kern_return_t kr = vm_allocate(task, &address, size, VM_FLAGS_ANYWHERE);
-    if (kr != KERN_SUCCESS) {
-        return nullptr;
-    }
-    return (void*)address;
-}
-
-void CGPMemoryEngine::CGPDeallocateMemory(void* address, size_t size) {
-    vm_deallocate(task, (mach_vm_address_t)address, size);
-}
-
-kern_return_t CGPMemoryEngine::CGPProtectMemory(void* address, size_t size, vm_prot_t protection) {
-    return vm_protect(task, (vm_address_t)address, size, FALSE, protection);
-}
-
-kern_return_t CGPMemoryEngine::CGPQueryMemory(void* address, vm_size_t* size, vm_prot_t* protection, vm_inherit_t* inheritance) {
-    vm_address_t addr = (vm_address_t)address;
-    vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-    memory_object_name_t object;
-    kern_return_t kr = vm_region_64(task, &addr, size, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &count, &object);
-    if (kr == KERN_SUCCESS) {
-        *protection = info.protection;
-        *inheritance = info.inheritance;
-    }
-    return kr;
-}
-
-void CGPMemoryEngine::ResultDeallocate(Result* result) {
-    if (result != nullptr && result->count != 0) {
-        for (int i = 0; i < result->resultBuffer.size(); i++) {
-            result->resultBuffer[i]->slide.clear();
-            result->resultBuffer[i]->slide.shrink_to_fit();
-            delete result->resultBuffer[i];
-        }
-        result->resultBuffer.clear();
-        result->resultBuffer.shrink_to_fit();
-        delete result;
-    }
-}
-
-Result* CGPMemoryEngine::ResultAllocate() {
-    Result* newResult = new Result;
-    newResult->count = 0;
-    return newResult;
-}
-
-bool CGPMemoryEngine::ChangeMemoryProtection(uintptr_t address, size_t size, int protection) {
-    size_t pageSize = sysconf(_SC_PAGESIZE);
-    uintptr_t pageStart = address & ~(pageSize - 1);
-    uintptr_t pageEnd = (address + size + pageSize - 1) & ~(pageSize - 1);
-    return mprotect((void*)pageStart, pageEnd - pageStart, protection) == 0;
-}
-
-template<int Index>
-void CGPMemoryEngine::VMTHook(uintptr_t classInstance, uintptr_t newFunc, uintptr_t& origFunc) {
-    if (!classInstance) return;
-    uintptr_t vtable = *reinterpret_cast<uintptr_t*>(classInstance);
-    if (!vtable) return;
-
-    uintptr_t functionAddress = vtable + Index * sizeof(void*);
-
-    if (*reinterpret_cast<uintptr_t*>(functionAddress) != newFunc) {
-        origFunc = *reinterpret_cast<uintptr_t*>(functionAddress);
-        ChangeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_WRITE | PROT_EXEC);
-        *reinterpret_cast<uintptr_t*>(functionAddress) = newFunc;
-        ChangeMemoryProtection(functionAddress, sizeof(void*), PROT_READ | PROT_EXEC);
-    }
-}
-
-bool CGPMemoryEngine::RebindSymbol(const char* symbolName, void* newFunction, void** originalFunction) {
-    struct rebinding rebindings = { symbolName, newFunction, originalFunction };
-    return rebind_symbols(&rebindings, 1) == 0;
-}
-
-bool CGPMemoryEngine::RebindSymbols(
-    const std::vector<std::tuple<const char*, void*, void**>>& symbols,
-    const std::function<bool(const char*)>& condition,
-    const std::function<void(const char*)>& onFailure
-) {
-    std::vector<rebinding> rebindings;
-    for (const auto& [name, newFunc, origFunc] : symbols) {
-        if (condition && !condition(name)) {
-            continue;
-        }
-        rebindings.push_back({ name, newFunc, origFunc });
-    }
-    int result = rebind_symbols(rebindings.data(), rebindings.size());
-    if (result != 0 && onFailure) {
-        for (const auto& [name, _, __] : symbols) {
-            onFailure(name);
-        }
-    }
-    return result == 0;
-}
-
-bool CGPMemoryEngine::RemapLibrary(const std::string& libraryName) {
-    uint32_t imageCount = _dyld_image_count();
-    const mach_header* header = nullptr;
-    uintptr_t slide = 0;
-
-    for (uint32_t i = 0; i < imageCount; ++i) {
-        const char* imageName = _dyld_get_image_name(i);
-        if (strstr(imageName, libraryName.c_str())) {
-            header = _dyld_get_image_header(i);
-            slide = _dyld_get_image_vmaddr_slide(i);
-            break;
-        }
-    }
-
-    if (!header) return false;
-
-    const segment_command_64* seg = nullptr;
-    uintptr_t startAddress = UINTPTR_MAX;
-    uintptr_t endAddress = 0;
-
-    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(header);
-    const load_command* cmd = reinterpret_cast<const load_command*>(ptr + sizeof(mach_header_64));
-    for (uint32_t i = 0; i < header->ncmds; ++i) {
-        if (cmd->cmd == LC_SEGMENT_64) {
-            seg = reinterpret_cast<const segment_command_64*>(cmd);
-            if (seg->vmsize > 0) {
-                uintptr_t segStart = seg->vmaddr + slide;
-                uintptr_t segEnd = segStart + seg->vmsize;
-                if (segStart < startAddress) startAddress = segStart;
-                if (segEnd > endAddress) endAddress = segEnd;
-            }
-        }
-        cmd = reinterpret_cast<const load_command*>(reinterpret_cast<const uint8_t*>(cmd) + cmd->cmdsize);
-    }
-
-    size_t imageSize = endAddress - startAddress;
-    void* originalAddress = reinterpret_cast<void*>(startAddress);
-
-    void* newMapping = mmap(nullptr, imageSize, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (newMapping == MAP_FAILED) {
-        // You can handle error, if needed
+bool CGPMemoryEngine::WriteMemory(uint64_t address, const void* data, size_t len)
+{
+    if (!IsValid())
+    {
         return false;
     }
 
-    kern_return_t kr = vm_read_overwrite(
-        mach_task_self(),
-        startAddress,
-        imageSize,
-        reinterpret_cast<mach_vm_address_t>(newMapping),
-        &imageSize
-    );
-    
-    if (kr != KERN_SUCCESS) {
-        // You can handle error, if needed
-        munmap(newMapping, imageSize);
+    if (!data || len == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "data || len : WriteMemory");
         return false;
     }
 
-    kr = vm_deallocate(mach_task_self(), startAddress, imageSize);
-    if (kr != KERN_SUCCESS) {
-        // You can handle error, if needed
-        munmap(newMapping, imageSize);
+    kern_return_t kr = vm_write(task_, static_cast<vm_address_t>(address),
+                                reinterpret_cast<vm_offset_t>(const_cast<void*>(data)),
+                                static_cast<mach_msg_type_number_t>(len));
+    if (kr != KERN_SUCCESS)
+    { // Error description mach_error_string(kr)
+        SetError(CGPErrorCode::VMWrite_Fail, "Failed to WriteMemory");
         return false;
     }
-
-    void* remapped = mmap(
-        originalAddress,
-        imageSize,
-        PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_FIXED | MAP_PRIVATE | MAP_ANON,
-        -1,
-        0
-    );
-    if (remapped == MAP_FAILED) {
-        // You can handle error, if needed
-        munmap(newMapping, imageSize);
-        return false;
-    }
-
-    memcpy(remapped, newMapping, imageSize);
-    munmap(newMapping, imageSize);
-
-    mprotect(remapped, imageSize, PROT_READ | PROT_EXEC);
 
     return true;
 }
 
-void CGPMemoryEngine::ParseIDAPattern(const std::string& ida_pattern, std::vector<uint8_t>& pattern, std::string& mask) {
-    size_t i = 0;
-    
-    while (i < ida_pattern.length()) {
-        
-        if (std::isspace(ida_pattern[i])) {
-            ++i;
+std::vector<void*> CGPMemoryEngine::GetAllResults() const
+{
+    if (!IsValid())
+    {
+        return {};
+    }
+
+    std::vector<void*> addresses;
+    addresses.reserve(result_->resultBuffer.size());
+
+    for (const auto& region : result_->resultBuffer)
+    {
+        if (region)
+        {
+            addresses.emplace_back(reinterpret_cast<void*>(region->region_base));
+        }
+    }
+
+    return addresses;
+}
+
+std::vector<void*> CGPMemoryEngine::GetResults(int count) const
+{
+    if (!IsValid())
+    {
+        return {};
+    }
+
+    std::vector<void*> addresses;
+
+    if (count <= 0)
+    {
+        return addresses;
+    }
+
+    size_t actualCount = std::min(static_cast<size_t>(count), result_->resultBuffer.size());
+    addresses.reserve(actualCount);
+
+    for (size_t i = 0; i < actualCount; ++i)
+    {
+        if (result_->resultBuffer[i])
+        {
+            addresses.emplace_back(reinterpret_cast<void*>(result_->resultBuffer[i]->region_base));
+        }
+    }
+
+    return addresses;
+}
+
+void* CGPMemoryEngine::AllocateMemory(size_t size)
+{
+    if (!IsValid())
+    {
+        return nullptr;
+    }
+
+    if (size == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "size == 0 : AllocateMemory");
+        return nullptr;
+    }
+
+    vm_address_t address = 0;
+    kern_return_t kr = vm_allocate(task_, &address, size, VM_FLAGS_ANYWHERE);
+    if (kr != KERN_SUCCESS)
+    { // Error description mach_error_string(kr)
+        SetError(CGPErrorCode::Allocation_Fail, "Failed to AllocateMemory");
+        return nullptr;
+    }
+
+    return reinterpret_cast<void*>(address);
+}
+
+bool CGPMemoryEngine::DeallocateMemory(void* address, size_t size)
+{
+    if (!IsValid())
+    {
+        return false;
+    }
+
+    if (!address || size == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "address || size : DeallocateMemory");
+        return false;
+    }
+
+    kern_return_t kr = vm_deallocate(task_, reinterpret_cast<mach_vm_address_t>(address), size);
+    if (kr != KERN_SUCCESS)
+    { // Error description mach_error_string(kr)
+        SetError(CGPErrorCode::VMDeallocate_Fail, "Failed to DeallocateMemory");
+        return false;
+    }
+
+    return true;
+}
+
+kern_return_t CGPMemoryEngine::ProtectMemory(void* address, size_t size, vm_prot_t protection)
+{
+    if (!IsValid())
+    {
+        return KERN_INVALID_ARGUMENT;
+    }
+
+    if (!address || size == 0)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "address || size : ProtectMemory");
+        return KERN_INVALID_ADDRESS;
+    }
+
+    kern_return_t kr = vm_protect(task_, reinterpret_cast<vm_address_t>(address), size, FALSE, protection);
+    if (kr != KERN_SUCCESS)
+    { // Error description mach_error_string(kr)
+        SetError(CGPErrorCode::VMProtect_Fail, "Failed to ProtectMemory");
+    }
+
+    return kr;
+}
+
+kern_return_t CGPMemoryEngine::QueryMemory(void* address, vm_size_t* size, vm_prot_t* protection, vm_inherit_t* inheritance) const
+{
+    if (!IsValid())
+    {
+        return KERN_INVALID_ARGUMENT;
+    }
+
+    if (!address || !size || !protection || !inheritance)
+    {
+        SetError(CGPErrorCode::Invalid_Argument, "address || size || protection || inheritance : QueryMemory");
+        return KERN_INVALID_ARGUMENT;
+    }
+
+    vm_address_t addr = reinterpret_cast<vm_address_t>(address);
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    memory_object_name_t object;
+
+    kern_return_t kr = vm_region_64(task_, &addr, size, VM_REGION_BASIC_INFO_64,
+                                    reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+    if (kr == KERN_SUCCESS)
+    {
+        *protection = info.protection;
+        *inheritance = info.inheritance;
+    }
+    else
+    { // Error description mach_error_string(kr)
+        SetError(CGPErrorCode::VMQuery_Fail, "Failed to QueryMemory");
+    }
+
+    return kr;
+}
+
+#pragma mark - CGPMemoryScanner Implementation -
+
+CGPMemoryScanner::CGPMemoryScanner(const std::string& binaryName, const std::string& segmentName)
+    : CGPMemoryEngine(mach_task_self()), SegmentStart_(0), SegmentEnd_(0)
+{
+    const struct mach_header_64* header = nullptr;
+
+    uint32_t imageCount = _dyld_image_count();
+
+    for (uint32_t i = 0; i < imageCount; ++i)
+    {
+        const char* imageName = _dyld_get_image_name(i);
+
+        if (strstr(imageName, binaryName.c_str()))
+        {
+            header = reinterpret_cast<const mach_header_64*>(_dyld_get_image_header(i));
+            break;
+        }
+    }
+
+    if (!header)
+    {
+        SetError(CGPErrorCode::Binary_Not_Found, "Binary not found in loaded images");
+        return;
+    }
+
+    unsigned long segmentSize = 0;
+    uintptr_t segmentData = reinterpret_cast<uintptr_t>(getsegmentdata(header, segmentName.c_str(), &segmentSize));
+
+    if (!segmentData)
+    {
+        SetError(CGPErrorCode::Segment_Not_Found, "Segment not found in binary");
+        return;
+    }
+
+    SegmentStart_ = segmentData;
+    SegmentEnd_ = SegmentStart_ + segmentSize;
+}
+
+uintptr_t CGPMemoryScanner::FindDirectSig(const std::string& signature, int step) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    uintptr_t found = FindIDAPatternFirst(signature);
+    return (found != 0) ? (found + step) : 0;
+}
+
+uintptr_t CGPMemoryScanner::Find_ADRL_Sig(const std::string& signature, int step) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    uintptr_t insnAddress = FindDirectSig(signature, step);
+
+    if (insnAddress == 0)
+    {
+        return 0;
+    }
+
+    // read ADRP instruction
+    auto adrpRead = ReadMemory(insnAddress, sizeof(uint32_t));
+
+    if (!adrpRead || adrpRead->size() != sizeof(uint32_t))
+    {
+        return 0;
+    }
+
+    uint32_t adrpInsn = *reinterpret_cast<uint32_t*>(adrpRead->data());
+
+    // read ADD instruction
+    auto addRead = ReadMemory(insnAddress + sizeof(uint32_t), sizeof(uint32_t));
+
+    if (!addRead || addRead->size() != sizeof(uint32_t))
+    {
+        return 0;
+    }
+
+    uint32_t addInsn = *reinterpret_cast<uint32_t*>(addRead->data());
+
+    if (adrpInsn == 0 || addInsn == 0)
+    {
+        return 0;
+    }
+
+    int64_t adrpPcRel = 0;
+
+    if (!DecodeADRImmediate(adrpInsn, &adrpPcRel) || adrpPcRel == 0)
+    {
+        return 0;
+    }
+
+    int32_t addImm12 = DecodeAddSubImmediate(addInsn);
+
+    return (GetPageOffset(insnAddress) + adrpPcRel + addImm12);
+}
+
+uintptr_t CGPMemoryScanner::Find_ADRP_LDRSTR_Sig(const std::string& signature, int step) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    uintptr_t insnAddress = FindDirectSig(signature, step);
+
+    if (insnAddress == 0)
+    {
+        return 0;
+    }
+
+    // read ADRP instruction
+    auto adrpRead = ReadMemory(insnAddress, sizeof(uint32_t));
+
+    if (!adrpRead || adrpRead->size() != sizeof(uint32_t))
+    {
+        return 0;
+    }
+
+    uint32_t adrpInsn = *reinterpret_cast<uint32_t*>(adrpRead->data());
+
+    // read LDRSTR instruction
+    auto ldrStrRead = ReadMemory(insnAddress + sizeof(uint32_t), sizeof(uint32_t));
+
+    if (!ldrStrRead || ldrStrRead->size() != sizeof(uint32_t))
+    {
+        return 0;
+    }
+
+    uint32_t ldrStrInsn = *reinterpret_cast<uint32_t*>(ldrStrRead->data());
+
+    if (adrpInsn == 0 || ldrStrInsn == 0)
+    {
+        return 0;
+    }
+
+    int64_t adrpPcRel = 0;
+
+    if (!DecodeADRImmediate(adrpInsn, &adrpPcRel) || adrpPcRel == 0)
+    {
+        return 0;
+    }
+
+    int32_t ldrStrImm12 = 0;
+
+    if (!DecodeLDRSTRImmediate(ldrStrInsn, &ldrStrImm12))
+    {
+        return 0;
+    }
+
+    return (GetPageOffset(insnAddress) + adrpPcRel + ldrStrImm12);
+}
+
+uintptr_t CGPMemoryScanner::Find_LDRSTR_Sig64(const std::string& signature, int step) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    uintptr_t insnAddress = FindDirectSig(signature, step);
+
+    if (insnAddress == 0)
+    {
+        return 0;
+    }
+
+    // read LDRSTR instruction
+    auto ldrStrRead = ReadMemory(insnAddress, sizeof(int32_t));
+    if (!ldrStrRead || ldrStrRead->size() != sizeof(int32_t))
+    {
+        return 0;
+    }
+
+    int32_t ldrStrInsn = *reinterpret_cast<int32_t*>(ldrStrRead->data());
+
+    if (ldrStrInsn == 0)
+    {
+        return 0;
+    }
+
+    uintptr_t imm12 = (ldrStrInsn >> 10) & 0xFFF;
+
+    return imm12 * 8;
+}
+
+uintptr_t CGPMemoryScanner::Find_LDRSTR_Sig32(const std::string& signature, int step) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    uintptr_t insnAddress = FindDirectSig(signature, step);
+
+    if (insnAddress == 0)
+    {
+        return 0;
+    }
+
+    // read LDRSTR instruction
+    auto ldrStrRead = ReadMemory(insnAddress, sizeof(int32_t));
+    if (!ldrStrRead || ldrStrRead->size() != sizeof(int32_t))
+    {
+        return 0;
+    }
+
+    int32_t ldrStrInsn = *reinterpret_cast<int32_t*>(ldrStrRead->data());
+
+    if (ldrStrInsn == 0)
+    {
+        return 0;
+    }
+
+    uint32_t imm12 = (ldrStrInsn >> 10) & 0xFFF;
+
+    return imm12 * 8;
+}
+
+bool CGPMemoryScanner::ComparePattern(const char* data, const char* pattern, const char* mask) const
+{
+    while (*mask)
+    {
+        if (*mask == 'x' && *data != *pattern)
+        {
+            return false;
+        }
+
+        ++data;
+        ++pattern;
+        ++mask;
+    }
+    return true;
+}
+
+uintptr_t CGPMemoryScanner::SearchInRange(uintptr_t start, const char* pattern, const std::string& mask) const
+{
+    size_t scanSize = mask.length();
+
+    if (scanSize < 1 || (start + scanSize) > SegmentEnd_)
+    {
+        return 0;
+    }
+
+    size_t length = SegmentEnd_ - start;
+
+    for (size_t i = 0; i <= length - scanSize; ++i)
+    {
+        uintptr_t currentAddress = start + i;
+
+        if (ComparePattern(reinterpret_cast<const char*>(currentAddress), pattern, mask.c_str()))
+        {
+            return currentAddress;
+        }
+    }
+
+    return 0;
+}
+
+std::vector<uintptr_t> CGPMemoryScanner::FindBytesAll(const std::vector<char>& bytes, const std::string& mask) const
+{
+    if (!IsValid())
+    {
+        return {};
+    }
+
+    std::vector<uintptr_t> results;
+
+    if (SegmentStart_ >= SegmentEnd_ || bytes.empty() || mask.empty())
+    {
+        return results;
+    }
+
+    if (bytes.size() != mask.size())
+    {
+        return results;
+    }
+
+    uintptr_t currentSearchAddress = SegmentStart_;
+    size_t scanSize = mask.length();
+
+    while (currentSearchAddress + scanSize <= SegmentEnd_)
+    {
+        uintptr_t found = SearchInRange(currentSearchAddress, bytes.data(), mask);
+
+        if (found == 0) 
+        {
+            break;
+        }
+
+        results.emplace_back(found);
+        currentSearchAddress = found + scanSize;
+    }
+
+    return results;
+}
+
+uintptr_t CGPMemoryScanner::FindBytesFirst(const std::vector<char>& bytes, const std::string& mask) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    if (SegmentStart_ >= SegmentEnd_ || bytes.empty() || mask.empty())
+    {
+        return 0;
+    }
+
+    if (bytes.size() != mask.size())
+    {
+        return 0;
+    }
+
+    return SearchInRange(SegmentStart_, bytes.data(), mask);
+}
+
+std::vector<uintptr_t> CGPMemoryScanner::FindIDAPatternAll(const std::string& pattern) const
+{
+    if (!IsValid())
+    {
+        return {};
+    }
+
+    std::vector<uintptr_t> results;
+
+    if (SegmentStart_ >= SegmentEnd_)
+    {
+        return results;
+    }
+
+    std::string mask;
+    std::vector<char> bytes;
+
+    size_t patternLen = pattern.length();
+
+    for (size_t i = 0; i < patternLen; ++i)
+    {
+        if (pattern[i] == ' ')
+        {
             continue;
         }
-        
-        if (ida_pattern[i] == '?') {
-            pattern.push_back(0x00);
+
+        if (pattern[i] == '?')
+        {
+            bytes.push_back(0);
             mask += '?';
-            ++i;
-        } else if (std::isxdigit(ida_pattern[i])) {
-            std::string byteStr;
-            byteStr += ida_pattern[i++];
-            
-            if (i < ida_pattern.length() && isxdigit(ida_pattern[i])) byteStr += ida_pattern[i++];
-            else continue; /* u can add logs, if hex digit is invalid - byteStr */
-            
-            uint8_t byte = static_cast<uint8_t>(std::stoul(byteStr, nullptr, 16));
-            pattern.push_back(byte);
+        }
+        else if (std::isxdigit(pattern[i]) && (i + 1) < patternLen && std::isxdigit(pattern[i + 1]))
+        {
+            std::string byteStr = pattern.substr(i, 2);
+            bytes.push_back(static_cast<char>(std::stoi(byteStr, nullptr, 16)));
             mask += 'x';
-        } else {
-            /* invalid character - ida_pattern[i] */
-            ++i;
+            ++i; // skip next character
+        }
+        else
+        {
+            // invalid pattern character
+            return results;
         }
     }
-}
 
-uintptr_t /* std::vector<size_t> */ CGPMemoryEngine::ScanPattern(const uint8_t* data, size_t data_len, const uint8_t* pattern, const char* mask) {
-   /* std::vector<size_t> results; */
-    
-    size_t pattern_len = std::strlen(mask);
-    
-    for (size_t i = 0; i <= data_len - pattern_len; ++i) {
-        
-        bool found = true;
-        for (size_t j = 0; j < pattern_len; ++j) {
-            
-            if (mask[j] == 'x' && data[i + j] != pattern[j]) {
-                found = false;
-                break;
-            }
-            // if mask[j] == '?' - wildcard
-        }
-        
-     /*   if (found) results.push_back(i); */
-        if (found) return reinterpret_cast<uintptr_t>(&data[i]);
+    if (bytes.empty() || mask.empty() || bytes.size() != mask.size())
+    {
+        return results;
     }
-    return /* results */ 0;
+
+    return FindBytesAll(bytes, mask);
 }
 
-uintptr_t CGPMemoryEngine::ScanIDAPattern(const uint8_t* data, size_t data_len, const std::string& ida_pattern) {
-    
-    std::vector<uint8_t> pattern;
+uintptr_t CGPMemoryScanner::FindIDAPatternFirst(const std::string& pattern) const
+{
+    if (!IsValid())
+    {
+        return 0;
+    }
+
+    if (SegmentStart_ >= SegmentEnd_)
+    {
+        return 0;
+    }
+
     std::string mask;
-    
-    ParseIDAPattern(ida_pattern, pattern, mask);
-    
-    return ScanPattern(data, data_len, pattern.data(), mask.c_str());
+    std::vector<char> bytes;
+
+    size_t patternLen = pattern.length();
+
+    for (size_t i = 0; i < patternLen; ++i)
+    {
+        if (pattern[i] == ' ')
+        {
+            continue;
+        }
+
+        if (pattern[i] == '?')
+        {
+            bytes.push_back(0);
+            mask += '?';
+        }
+        else if (std::isxdigit(pattern[i]) && (i + 1) < patternLen && std::isxdigit(pattern[i + 1]))
+        {
+            std::string byteStr = pattern.substr(i, 2);
+            bytes.push_back(static_cast<char>(std::stoi(byteStr, nullptr, 16)));
+            mask += 'x';
+            ++i; // skip next character
+        }
+        else
+        {
+            // invalid pattern character
+            return 0;
+        }
+    }
+
+    if (bytes.empty() || mask.empty() || bytes.size() != mask.size())
+    {
+        return 0;
+    }
+
+    return FindBytesFirst(bytes, mask);
 }
 
+uintptr_t CGPMemoryScanner::GetPageOffset(uintptr_t address) const
+{
+    return address & ~(pageSize_ - 1);
+}
+
+#pragma mark - CGPInstructionDecoder Implementation -
+
+int32_t CGPInstructionDecoder::GetBit(uint32_t insn, int pos) const
+{
+    return (insn >> pos) & 1;
+}
+
+int32_t CGPInstructionDecoder::GetBits(uint32_t insn, int pos, int length) const
+{
+    return (insn >> pos) & ((1 << length) - 1);
+}
+
+bool CGPInstructionDecoder::IsADR(uint32_t insn) const
+{
+    return (insn & 0x9F000000) == 0x10000000;
+}
+
+bool CGPInstructionDecoder::IsADRP(uint32_t insn) const
+{
+    return (insn & 0x9F000000) == 0x90000000;
+}
+
+bool CGPInstructionDecoder::IsLDR(uint32_t insn) const
+{
+    return GetBit(insn, 22) == 1;
+}
+
+bool CGPInstructionDecoder::IsLDRSTU(uint32_t insn) const
+{
+    return (insn & 0x0A000000) == 0x08000000;
+}
+
+bool CGPInstructionDecoder::IsLDRSTUImm(uint32_t insn) const
+{
+    return (insn & 0x3B000000) == 0x39000000;
+}
+
+bool CGPInstructionDecoder::DecodeADRImmediate(uint32_t insn, int64_t* imm) const
+{
+    if (IsADR(insn) || IsADRP(insn))
+    {
+        // 21-bit immediate
+        int64_t imm_val = GetBits(insn, 5, 19) << 2; // immhi
+        imm_val |= GetBits(insn, 29, 2);             // immlo
+
+        if (IsADRP(insn))
+        {
+            // Sign-extend the 21-bit immediate
+            int64_t sign = (imm_val >> 20) & 1;
+            imm_val <<= 12;
+
+            if (sign)
+            {
+                imm_val |= (~0ULL) << 33;
+            }
+
+            *imm = imm_val;
+        }
+        else // ADR
+        {
+            // Sign-extend the 21-bit immediate
+            if (imm_val & (1 << 20))
+            {
+                imm_val |= ~((1LL << 21) - 1);
+            }
+
+            *imm = imm_val;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+bool CGPInstructionDecoder::DecodeLDRSTRImmediate(uint32_t insn, int32_t* imm12) const
+{
+    if (IsLDRSTUImm(insn))
+    {
+        *imm12 = GetBits(insn, 10, 12);
+
+        // shift with scale value
+        *imm12 <<= GetBits(insn, 30, 2); // size bits
+
+        return true;
+    }
+
+    return false;
+}
+
+/*
+*  31 30 29 28         23 22 21         10 9   5 4   0
+* +--+--+--+-------------+--+-------------+-----+-----+
+* |sf|op| S| 1 0 0 0 1 0 |sh|    imm12    |  Rn | Rd  |
+* +--+--+--+-------------+--+-------------+-----+-----+
+*
+*    sf: 0 -> 32bit, 1 -> 64bit
+*    op: 0 -> add  , 1 -> sub
+*     S: 1 -> set flags
+*    sh: 1 -> LSL imm by 12
+*/
+
+int32_t CGPInstructionDecoder::DecodeAddSubImmediate(uint32_t insn) const
+{
+    int32_t imm12 = GetBits(insn, 10, 12);
+    bool shift = GetBit(insn, 22) == 1;
+
+    if (shift)
+    {
+        imm12 <<= 12;
+    }
+
+    return imm12;
+}
