@@ -11,9 +11,9 @@
 
 #include <string>
 
-#include "Utilities/fmt/core.h"
-#include "Utilities/fmt/format.h"
-#include "Utilities/magic_enum/magic_enum.hpp"
+#include <fmt/core.h>
+#include <fmt/format.h>
+#include <magic_enum/magic_enum.hpp>
 
 enum class CGPErrorCode {
     None,
